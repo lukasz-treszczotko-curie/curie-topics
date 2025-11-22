@@ -477,16 +477,18 @@ wheels = [
 [[package]]
 name = "curie-claim"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "coloredlogs" },
     { name = "datasets" },
+    { name = "httpx" },
     { name = "ipdb" },
     { name = "llama-index" },
     { name = "logfire" },
     { name = "openrouter" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
+    { name = "python-dotenv" },
     { name = "tiktoken" },
     { name = "tqdm" },
     { name = "transformers" },
@@ -496,12 +498,14 @@ dependencies = [
 requires-dist = [
     { name = "coloredlogs", specifier = ">=15.0.1" },
     { name = "datasets", specifier = ">=4.4.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "ipdb", specifier = ">=0.13.13" },
     { name = "llama-index", specifier = ">=0.14.8" },
     { name = "logfire", specifier = ">=4.15.1" },
     { name = "openrouter", specifier = ">=0.0.19" },
     { name = "pydantic", specifier = ">=2.12.4" },
     { name = "pydantic-ai", specifier = ">=1.20.0" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "transformers", specifier = ">=4.57.1" },
