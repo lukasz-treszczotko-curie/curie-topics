@@ -1,7 +1,10 @@
 import argparse
 import asyncio
 import json
+import logging
+import os
 import random
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,11 +15,8 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from src.taxonomy.process_topics import Topic, load_topics_from_dict
 from src.logging_config import setup_logging
-import logging
-import os
-
+from src.taxonomy.process_topics import Topic, load_topics_from_dict
 
 load_dotenv()
 logfire.configure(token=os.getenv("LOGFIRE_TOKEN"))
@@ -44,15 +44,23 @@ def get_validation_prompt(topic: Topic) -> str:
             topic.most_cited_works or [], topic.most_cited_works_citation_counts or []
         )
     )
-    subtopics_str = "\n".join(
-        f"{i + 1}. {st}" for i, st in enumerate(topic.subtopics or [])
-    )
+    # Format subtopics with name and description
+    subtopics_list = []
+    for i, st in enumerate(topic.subtopics or []):
+        if isinstance(st, dict):
+            name = st.get("name", "")
+            description = st.get("description", "")
+            subtopics_list.append(f"{i + 1}. **{name}**: {description}")
+        else:
+            # Fallback for old format (just strings)
+            subtopics_list.append(f"{i + 1}. {st}")
+    subtopics_str = "\n".join(subtopics_list)
 
     return f"""# Role
 You are an expert taxonomist evaluating the quality of subtopic categorizations in the field of {topic.domain.display_name}.
 
 # Task
-Evaluate the following list of subtopics generated for a given topic. Assess their quality based on specific criteria and provide scores and critique.
+Evaluate the following list of subtopics (with descriptions) generated for a given topic. Assess their quality based on specific criteria and provide scores and critique.
 
 # Topic Information
 - **Domain**: {topic.domain.display_name}
@@ -83,9 +91,9 @@ Evaluate the following list of subtopics generated for a given topic. Assess the
 - Score 0.0: Major gaps; significant aspects of the topic are not covered.
 
 ## 3. Clarity and Specificity (0.0 - 1.0)
-- Score 1.0: Each subtopic is CLEAR, SPECIFIC, and CONCISE (2-6 words). Names are unambiguous.
-- Score 0.5: Most subtopics are clear, but some are vague or overly broad.
-- Score 0.0: Many subtopics are unclear, ambiguous, or poorly named.
+- Score 1.0: Each subtopic name is CLEAR, SPECIFIC, and CONCISE (2-6 words). Names are unambiguous. Descriptions (2-4 sentences) clearly explain scope and boundaries.
+- Score 0.5: Most subtopics are clear, but some names or descriptions are vague or overly broad.
+- Score 0.0: Many subtopics have unclear names, ambiguous descriptions, or poorly defined scope.
 
 ## 4. Abstraction Level Consistency (0.0 - 1.0)
 - Score 1.0: ALL subtopics are at the SAME LEVEL of abstraction and granularity.
@@ -102,9 +110,10 @@ Provide constructive feedback addressing:
 1. Specific overlaps between subtopics (if any)
 2. Missing aspects of the topic (if any)
 3. Unclear or poorly named subtopics (if any)
-4. Inconsistencies in abstraction level (if any)
-5. Whether the number of subtopics is appropriate
-6. Suggestions for improvement
+4. Quality of descriptions - are they informative, clear, and help disambiguate? (if any issues)
+5. Inconsistencies in abstraction level (if any)
+6. Whether the number of subtopics is appropriate
+7. Suggestions for improvement
 
 # Output Format
 Provide your evaluation as a structured response with scores and detailed critique.
@@ -231,7 +240,14 @@ async def main_async(
     logger.info(f"Average Abstraction Level: {avg_abstraction:.3f}")
 
     # Save results
+    timestamp = datetime.now().isoformat()
     output_data = {
+        "metadata": {
+            "timestamp": timestamp,
+            "model": model_name,
+            "num_samples": num_samples,
+            "batch_size": batch_size,
+        },
         "summary": {
             "num_validated": len(results),
             "avg_quality_score": avg_quality,
@@ -273,14 +289,14 @@ def main():
     parser.add_argument(
         "--input",
         type=str,
-        default="src/taxonomy/openalex_topics_with_subtopics.json",
+        required=True,
         help="Path to the input JSON file with subtopics",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="src/taxonomy/validation_results.json",
-        help="Path to save validation results",
+        default=None,
+        help="Path to save validation results (default: src/taxonomy/validation_results_TIMESTAMP.json)",
     )
     parser.add_argument(
         "--num-samples",
@@ -309,11 +325,19 @@ def main():
         logger.info(f"Random seed set to: {args.seed}")
 
     input_file = Path(args.input)
-    output_file = Path(args.output)
+
+    # Generate timestamped filename if no output specified
+    if args.output is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = Path(f"src/taxonomy/validation_results_{timestamp}.json")
+    else:
+        output_file = Path(args.output)
 
     if not input_file.exists():
         logger.error(f"Input file not found: {input_file}")
         return
+
+    logger.info(f"Output will be saved to: {output_file}")
 
     asyncio.run(
         main_async(

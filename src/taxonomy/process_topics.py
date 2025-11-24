@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import logfire
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 OLMO3_7B_THINK = "allenai/olmo-3-7b-think"
 SONNET_4_5 = "anthropic/claude-sonnet-4.5"
+GEMINI_2_5_FLASH = "google/gemini-2.5-flash-preview-09-2025"
 
 
 @dataclass
@@ -51,7 +52,9 @@ class Topic:
     subtopics_model: str
     most_cited_works: Optional[List[str]] = None
     most_cited_works_citation_counts: Optional[List[int]] = None
-    subtopics: Optional[List[str]] = None
+    subtopics: Optional[List[dict]] = (
+        None  # List of dicts with 'name' and 'description'
+    )
 
     @classmethod
     def from_dict(cls, data: dict) -> "Topic":
@@ -93,7 +96,8 @@ class Topic:
 
 
 class SubtopicsOutput(BaseModel):
-    subtopics: List[str]
+    """Output model for subtopics generation"""
+    subtopics: List[tuple[str, str]]  # List of (name, description) tuples
 
 
 def load_topics_from_list(file_path: str | Path) -> dict[str, Topic]:
@@ -160,7 +164,11 @@ async def process_topic(
     )
 
     result = await agent.run(prompt)
-    topic.subtopics = result.output.subtopics
+    # Convert tuples to dicts for storage
+    topic.subtopics = [
+        {"name": name, "description": desc}
+        for name, desc in result.output.subtopics
+    ]
     topic.subtopics_model = subtopics_model_name
 
     logger.info(
@@ -170,13 +178,15 @@ async def process_topic(
     return topic
 
 
-async def main_async(batch_size: int = 10):
+async def main_async(
+    batch_size: int = 10, model_name: str = "allenai/olmo-3-7b-instruct"
+):
     openrouter_provider = OpenAIProvider(
         api_key=os.getenv("OPENROUTER_API_KEY"),
         base_url="https://openrouter.ai/api/v1",
     )
 
-    subtopics_model_name = "allenai/olmo-3-7b-instruct"
+    subtopics_model_name = model_name
 
     model = OpenAIModel(
         subtopics_model_name,
@@ -186,12 +196,18 @@ async def main_async(batch_size: int = 10):
     agent = Agent(
         model=model,
         output_type=SubtopicsOutput,
+        retries=3,  # Retry up to 3 times on validation errors
     )
 
     # Get the path to the JSON files
     current_dir = Path(__file__).parent
     input_file = current_dir / "openalex_topics.json"
-    progress_file = current_dir / "openalex_topics_with_subtopics.json"
+
+    # Create a sanitized model name for the filename
+    model_name_safe = subtopics_model_name.replace("/", "_").replace(":", "_")
+    progress_file = (
+        current_dir / f"openalex_topics_with_subtopics_{model_name_safe}.json"
+    )
 
     # Load topics - progress file uses dict format, input file uses list format
     if progress_file.exists():
@@ -201,10 +217,44 @@ async def main_async(batch_size: int = 10):
         logger.info(f"Loading topics from {input_file}")
         topics_dict = load_topics_from_list(input_file)
 
+    # ========== TEMPORARY FILTER: Machine Learning Topics Only ==========
+    # TODO: Remove this filter when ready to process all topics
+    ml_keywords = [
+        "machine learning",
+        "deep learning",
+        "neural network",
+        "artificial intelligence",
+        "reinforcement learning",
+        "supervised learning",
+        "unsupervised learning",
+        "convolutional",
+        "recurrent",
+        "transformer",
+        "attention mechanism",
+        "natural language processing",
+        "computer vision",
+        "generative model",
+    ]
+
+    def is_ml_topic(topic: Topic) -> bool:
+        """Check if a topic is related to machine learning"""
+        text = f"{topic.display_name} {topic.description} {' '.join(topic.keywords)}".lower()
+        return any(keyword in text for keyword in ml_keywords)
+
+    # Filter to only ML topics
+    all_topics_count = len(topics_dict)
+    topics_dict = {tid: t for tid, t in topics_dict.items() if is_ml_topic(t)}
+    logger.info(
+        f"FILTER ACTIVE: Reduced from {all_topics_count} to {len(topics_dict)} ML-related topics"
+    )
+    # =====================================================================
+
     # Filter topics that need processing (those without subtopics)
     topics_to_process = [t for t in topics_dict.values() if t.subtopics is None]
     topics_already_processed = len(topics_dict) - len(topics_to_process)
 
+    logger.info(f"Model: {subtopics_model_name}")
+    logger.info(f"Output file: {progress_file}")
     logger.info(f"Loaded {len(topics_dict)} topics total")
     logger.info(f"Already processed: {topics_already_processed}")
     logger.info(f"To process: {len(topics_to_process)}")
@@ -265,10 +315,18 @@ def main():
         default=10,
         help="Number of topics to process in parallel (default: 10)",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="allenai/olmo-3-7b-instruct",
+        help="Model to use for subtopic generation (default: allenai/olmo-3-7b-instruct)",
+    )
     args = parser.parse_args()
 
-    logger.info(f"Starting topic processing with batch size: {args.batch_size}")
-    asyncio.run(main_async(batch_size=args.batch_size))
+    logger.info(f"Starting topic processing")
+    logger.info(f"Model: {args.model}")
+    logger.info(f"Batch size: {args.batch_size}")
+    asyncio.run(main_async(batch_size=args.batch_size, model_name=args.model))
 
 
 if __name__ == "__main__":
